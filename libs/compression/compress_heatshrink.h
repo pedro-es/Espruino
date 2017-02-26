@@ -13,7 +13,7 @@
  */
 
 /** gets data from array, writes to callback */
-void heatshrink_encode(unsigned char *data, size_t dataLen, void (*callback)(unsigned char ch, uint32_t *cbdata), uint32_t *cbdata);
+void heatshrink_encode(unsigned char *data, size_t dataLen, void (*callback)(unsigned char ch, uint32_t *cbdata), uint32_t *cbdata, unsigned char *(*chunk)(unsigned char *data, size_t dataLen, size_t chunks));
 
 /** gets data from callback, writes it into array */
-void heatshrink_decode(int (*callback)(uint32_t *cbdata), uint32_t *cbdata, unsigned char *data);
+void heatshrink_decode(int (*callback)(uint32_t *cbdata), uint32_t *cbdata, unsigned char *data, size_t dataLen, unsigned char *(*chunk)(unsigned char *data, size_t dataLen, size_t chunks));

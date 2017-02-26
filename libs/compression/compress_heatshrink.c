@@ -22,7 +22,8 @@
 #define BUFFERSIZE 128
 
 /** gets data from array, writes to callback */
-void heatshrink_encode(unsigned char *data, size_t dataLen, void (*callback)(unsigned char ch, uint32_t *cbdata), uint32_t *cbdata) {
+/** when we finish reading the array, the 'chunk' callback function could point to another chunk of dataLen size to continue encoding */
+void heatshrink_encode(unsigned char *data, size_t dataLen, void (*callback)(unsigned char ch, uint32_t *cbdata), uint32_t *cbdata, unsigned char *(*chunk)(unsigned char *data, size_t dataLen, size_t chunks)) {
   heatshrink_encoder hse;
   uint8_t outBuf[BUFFERSIZE];
   heatshrink_encoder_reset(&hse);
@@ -31,12 +32,18 @@ void heatshrink_encode(unsigned char *data, size_t dataLen, void (*callback)(uns
   size_t count = 0;
   size_t sunk = 0;
   size_t polled = 0;
+  size_t chunks = 1;
   while (sunk < dataLen) {
     bool ok = heatshrink_encoder_sink(&hse, &data[sunk], dataLen - sunk, &count) >= 0;
     assert(ok);
     sunk += count;
     if (sunk == dataLen) {
-      heatshrink_encoder_finish(&hse);
+      if(!chunk || !(data = chunk(data, dataLen, chunks++))) {
+        heatshrink_encoder_finish(&hse);
+      }
+      else {
+        sunk = 0;
+      }
     }
 
     HSE_poll_res pres;
@@ -55,16 +62,18 @@ void heatshrink_encode(unsigned char *data, size_t dataLen, void (*callback)(uns
 }
 
 /** gets data from callback, writes it into array */
-void heatshrink_decode(int (*callback)(uint32_t *cbdata), uint32_t *cbdata, unsigned char *data) {
+/** when destination is full, the 'chunk' callback function may point a new destiantion chunk of dataLen size */
+void heatshrink_decode(int (*callback)(uint32_t *cbdata), uint32_t *cbdata, unsigned char *data, size_t dataLen, unsigned char *(*chunk)(unsigned char *data, size_t dataLen, size_t chunks)) {
   heatshrink_decoder hsd;
   uint8_t inBuf[BUFFERSIZE];
+  uint8_t outBuf[BUFFERSIZE];
   heatshrink_decoder_reset(&hsd);
 
   size_t count = 0;
-  size_t sunk = 0;
   size_t polled = 0;
   int lastByte = 0;
   size_t inBufCount = 0;
+  size_t chunks = 1;
   while (lastByte >= 0 || inBufCount>0) {
     // Read data from flash
     while (inBufCount<BUFFERSIZE && lastByte>=0) {
@@ -82,16 +91,32 @@ void heatshrink_decode(int (*callback)(uint32_t *cbdata), uint32_t *cbdata, unsi
     }
     inBufCount -= count;
     assert(ok);
-    sunk += count;
     if (lastByte < 0) {
       heatshrink_decoder_finish(&hsd);
     }
 
     HSE_poll_res pres;
     do {
-      pres = heatshrink_decoder_poll(&hsd, &data[polled], 0xFFFFFF/*bad!*/, &count); // TODO: range check?
-      assert(pres >= 0);
-      polled += count;
+      size_t available = dataLen - polled ;
+      if(available) {
+        pres = heatshrink_decoder_poll(&hsd, &data[polled], available, &count);
+        assert(pres >= 0);
+	polled += count;
+      }
+      else {
+	// This is needed because heatshrink_decoder_poll will always return HSER_POLL_MORE instead of HSER_POLL_EMPTY if buffer size is 0
+	// Should fix heatshrink_decoder_poll instead :)
+        pres = heatshrink_decoder_poll(&hsd, outBuf, dataLen > BUFFERSIZE ? BUFFERSIZE : dataLen, &count);
+        assert(pres >= 0);
+        if(count) {
+	  assert(chunk);
+	  data = chunk(data, dataLen, chunks++);
+	  assert(data);
+          for(polled = 0 ; polled < count ; polled++) {
+            data[polled] = outBuf[polled];
+          }
+        }
+      }
     } while (pres == HSER_POLL_MORE);
     assert(pres == HSER_POLL_EMPTY);
     if (lastByte < 0) {

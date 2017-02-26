@@ -56,7 +56,13 @@ has_bootloader = False
 if "bootloader" in board.info and board.info["bootloader"]!=0:
   has_bootloader = True
 
-if not LINUX:
+if board.info.get("resizable_jsvars", False):
+  if "saved_code" in board.chip:
+    flash_saved_code_start = board.chip["saved_code"]["address"]
+    flash_saved_code_length = board.chip["saved_code"]["size"]
+    flash_page_size = board.chip["saved_code"]["page_size"]
+    flash_available_for_code = board.chip["saved_code"]["flash_available"]*1024
+elif not LINUX:
   # 100xB and 103xB are mid-density, so have 1k page sizes
   if board.chip["part"][:7]=="STM32F1" and board.chip["part"][10]=="B": board.chip["subfamily"]="MD";
 
@@ -111,6 +117,7 @@ if not LINUX:
     flash_saved_code_start = "(FLASH_START + FLASH_TOTAL - FLASH_SAVED_CODE_LENGTH)"
     flash_available_for_code = total_flash - (flash_saved_code_pages*flash_page_size)
     if has_bootloader: flash_available_for_code -= common.get_bootloader_size(board)
+  flash_saved_code_length = flash_page_size*flash_saved_code_pages
 
   print("Variables = "+str(variables))
   print("JsVar size = "+str(var_size))
@@ -165,6 +172,8 @@ codeOut("#define PC_BOARD_CHIP \""+board.chip["part"]+"\"")
 codeOut("#define PC_BOARD_CHIP_FAMILY \""+board.chip["family"]+"\"")
 
 codeOut("")
+
+if 'include' in board.info: codeOut('#include "'+ board.info["include"] + '"')
 
 linker_end_var = "_end";
 linker_etext_var = "_etext";
@@ -287,8 +296,9 @@ if LINUX:
   codeOut('#define RESIZABLE_JSVARS // Allocate variables in blocks using malloc')
   #codeOut("#define JSVAR_CACHE_SIZE                "+str(200)+" // Number of JavaScript variables in RAM")
 else:
-  codeOut("#define JSVAR_CACHE_SIZE                "+str(variables)+" // Number of JavaScript variables in RAM")
-  codeOut("#define FLASH_AVAILABLE_FOR_CODE        "+str(int(flash_available_for_code)))
+  if board.info.get("resizable_jsvars", False): codeOut('#define RESIZABLE_JSVARS // Allocate variables in blocks using malloc')
+  else: codeOut("#define JSVAR_CACHE_SIZE                "+str(variables)+" // Number of JavaScript variables in RAM")
+  codeOut("#define FLASH_AVAILABLE_FOR_CODE        "+str(flash_available_for_code))
   if board.chip["class"]=="EFM32":
     codeOut("// FLASH_PAGE_SIZE defined in em_device.h");
   else:
@@ -306,7 +316,7 @@ else:
     codeOut("#define ESPRUINO_BINARY_ADDRESS         "+hex(common.get_espruino_binary_address(board)))
   codeOut("")
   codeOut("#define FLASH_SAVED_CODE_START            "+str(flash_saved_code_start))
-  codeOut("#define FLASH_SAVED_CODE_LENGTH           "+str(int(flash_page_size*flash_saved_code_pages)))
+  codeOut("#define FLASH_SAVED_CODE_LENGTH           "+str(flash_saved_code_length))
   if board.chip["family"]=="STM32L4":
     codeOut("#define FLASH_MAGIC_LOCATION              (FLASH_SAVED_CODE_START + FLASH_SAVED_CODE_LENGTH - 8)")
   else:

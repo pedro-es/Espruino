@@ -816,6 +816,9 @@ size_t jsuGetFreeStack() {
 #ifdef ARM
   void *frame = __builtin_frame_address(0);
   return (size_t)((char*)&LINKER_END_VAR) - (size_t)((char*)frame);
+#elif defined(ESP8266)
+  void *frame = __builtin_alloca(0);
+  return (size_t)(frame) - 0x3fffc000;
 #else
   return 100000000; // lots.
 #endif

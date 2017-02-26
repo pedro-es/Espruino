@@ -124,7 +124,7 @@ void jshPrintBanner() {
   jsiConsolePrintf(
     "Flash map %s, manuf 0x%x chip 0x%x\n",
     flash_maps[map], fid & 0xff, chip);
-  if ((chip == 0x4013 && map != 0) || (chip == 0x4016 && map != 4)) {
+  if ((chip == 0x4013 && map != 0) || (chip == 0x4016 && map != 4 && map != 6)) {
     jsiConsolePrint("WARNING: *** Your flash chip does not match your flash map ***\n");
   }
 }
@@ -331,8 +331,10 @@ void user_init() {
   // Dump the restart exception information.
   dumpRestart();
   os_printf("Heap: %d\n", system_get_free_heap_size());
+#ifndef RESIZABLE_JSVARS
   os_printf("Variables: %d @%dea = %dbytes\n", JSVAR_CACHE_SIZE, sizeof(JsVar),
       JSVAR_CACHE_SIZE * sizeof(JsVar));
+#endif
   os_printf("Time sys=%u rtc=%u\n", system_get_time(), system_get_rtc_time());
 
   espFlashKB = flash_kb[system_get_flash_size_map()];

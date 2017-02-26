@@ -18,14 +18,24 @@
 #include "jsvariterator.h"
 #include "jsinteractive.h"
 
-#ifdef USE_HEATSHRINK
-  #include "compress_heatshrink.h"
-  #define COMPRESS heatshrink_encode
-  #define DECOMPRESS heatshrink_decode
+#ifdef RESIZABLE_JSVARS
+  #ifdef USE_HEATSHRINK
+    #include "compress_heatshrink.h"
+    #define COMPRESS(data, len, writecb, cbdata, chunkcb) heatshrink_encode(data, len, writecb, cbdata, chunkcb)
+    #define DECOMPRESS(readcb, cbdata, data, len, chunkcb) heatshrink_decode(readcb, cbdata, data, len, chunkcb)
+  #else
+    #error RESIZABLE_JSVARS keeps data in chunks. rle glue routines are not adapted to this, and will crash
+  #endif
 #else
-  #include "compress_rle.h"
-  #define COMPRESS rle_encode
-  #define DECOMPRESS rle_decode
+  #ifdef USE_HEATSHRINK
+    #include "compress_heatshrink.h"
+    #define COMPRESS(data, len, writecb, cbdata, chunkcb) heatshrink_encode(data, len, writecb, cbdata, 0)
+    #define DECOMPRESS(readcb, cbdata, data, len, chunkcb) heatshrink_decode(readcb, cbdata, data, len, 0)
+  #else
+    #include "compress_rle.h"
+    #define COMPRESS(data, len, writecb, cbdata, chunkcb) rle_encode(data, len, writecb, cbdata)
+    #define DECOMPRESS(readcb, cbdata, data, len, chunkcb) rle_decode(readcb, cbdata, data)
+  #endif
 #endif
 
 #ifdef LINUX
@@ -243,6 +253,12 @@ void jsfSaveToFlash_writecb(unsigned char ch, uint32_t *cbdata) {
 }
 #endif
 
+#ifdef RESIZABLE_JSVARS
+unsigned char *jsfFlash_chunkcb(unsigned char *data, size_t dataLen, size_t chunks) {
+    size_t size = chunks * JSVAR_BLOCK_SIZE;
+    return size < jsvGetMemoryTotal() ? (unsigned char *) _jsvGetAddressOf(1 + size) : 0;
+}
+#endif
 
 // ------------------------------------------------------------------------
 // ------------------------------------------------------------------------
@@ -266,6 +282,8 @@ void jsfSaveToFlash_writecb(unsigned char ch, uint32_t *cbdata) {
  *      decompressed JS code
  *   Boot code starts at FLASH_SAVED_CODE_START+8
  *   Saved state starts at FLASH_SAVED_CODE_START+8+boot_code_length
+ *   unless we are using RESIZABLE_JSVARS, in which case the first 4 bytes 
+ *   there contains the number of JSVars and these come after (compressed)
  *
  */
 
@@ -310,7 +328,7 @@ void jsfSaveToFlash(JsvSaveFlashFlags flags, JsVar *bootCode) {
       for (i=1;i<=jsVarCount;i++) {
         fwrite(_jsvGetAddressOf(i),1,sizeof(JsVar),f);
       }*/
-      COMPRESS((unsigned char*)_jsvGetAddressOf(1), jsVarCount*sizeof(JsVar), jsfSaveToFlash_writecb, (uint32_t*)f);
+      COMPRESS((unsigned char*)_jsvGetAddressOf(1), JSVAR_BLOCK_SIZE*sizeof(JsVar), jsfSaveToFlash_writecb, (uint32_t*)f, jsfFlash_chunkcb);
       fclose(f);
       jsiConsolePrint("\nDone!\n");
 
@@ -320,8 +338,9 @@ void jsfSaveToFlash(JsvSaveFlashFlags flags, JsVar *bootCode) {
       fread(&jsVarCount, sizeof(unsigned int), 1, f);
       if (jsVarCount != jsvGetMemoryTotal())
         jsiConsolePrint("Error: memory sizes different\n");
-      unsigned char *decomp = (unsigned char*)malloc(jsVarCount*sizeof(JsVar));
-      DECOMPRESS(jsfLoadFromFlash_readcb, (uint32_t *)f, decomp);
+      size_t len = jsVarCount*sizeof(JsVar);
+      unsigned char *decomp = (unsigned char*)malloc(len);
+      DECOMPRESS(jsfLoadFromFlash_readcb, (uint32_t *)f, decomp, len, 0);
       fclose(f);
       unsigned char *comp = (unsigned char *)_jsvGetAddressOf(1);
       size_t j;
@@ -336,7 +355,8 @@ void jsfSaveToFlash(JsvSaveFlashFlags flags, JsVar *bootCode) {
     }
   }
 #else // !LINUX
-  unsigned int dataSize = jsvGetMemoryTotal() * sizeof(JsVar);
+  unsigned int jsVarCount = jsvGetMemoryTotal();
+  unsigned int dataSize = jsVarCount * sizeof(JsVar);
   uint32_t *basePtr = (uint32_t *)_jsvGetAddressOf(1);
   uint32_t pageStart, pageLength;
   bool tryAgain = true;
@@ -344,6 +364,7 @@ void jsfSaveToFlash(JsvSaveFlashFlags flags, JsVar *bootCode) {
   uint32_t writtenBytes;
   uint32_t endOfData;
   uint32_t cbData[3];
+  size_t len;
 
   /* If we didn't specify boot code this time, but boot code was set previously,
    * load it into RAM so we can keep it. */
@@ -419,7 +440,14 @@ void jsfSaveToFlash(JsvSaveFlashFlags flags, JsVar *bootCode) {
     jshFlashWrite(&originalBootCodeInfo, FLASH_BOOT_CODE_INFO_LOCATION, FLASH_UNITARY_WRITE_SIZE);
     // state....
     if (flags & SFF_SAVE_STATE) {
-      COMPRESS((unsigned char*)basePtr, dataSize, jsfSaveToFlash_writecb, cbData);
+#ifdef RESIZABLE_JSVARS
+      jshFlashWrite(&jsVarCount, cbData[1], sizeof(jsVarCount)); // number of jsvars
+      cbData[1] += sizeof(jsVarCount);
+      len = JSVAR_BLOCK_SIZE;
+#else
+      len = JSVAR_CACHE_SIZE;
+#endif
+      COMPRESS((unsigned char*)basePtr, len * sizeof(JsVar), jsfSaveToFlash_writecb, cbData, jsfFlash_chunkcb);
     }
     endOfData = cbData[1];
     // make sure we write everything in buffer
@@ -446,7 +474,7 @@ void jsfSaveToFlash(JsvSaveFlashFlags flags, JsVar *bootCode) {
   }
 
   if (success) {
-    jsiConsolePrintf("\nCompressed %d bytes to %d", dataSize, writtenBytes);
+    jsiConsolePrintf("\nCompressed %d jsvars (%d bytes) to %d bytes", jsVarCount, dataSize, writtenBytes);
     jshFlashWrite(&endOfData, FLASH_STATE_END_LOCATION, FLASH_UNITARY_WRITE_SIZE); // write position of end of data, at start of address space
 
     uint32_t magic = FLASH_MAGIC;
@@ -460,7 +488,7 @@ void jsfSaveToFlash(JsvSaveFlashFlags flags, JsVar *bootCode) {
     cbData[1] = 0; // increment if fails
     // TODO: check boot code written ok
     if (flags & SFF_SAVE_STATE)
-      COMPRESS((unsigned char*)basePtr, dataSize, jsfSaveToFlash_checkcb, cbData);
+      COMPRESS((unsigned char*)basePtr, len * sizeof(JsVar), jsfSaveToFlash_checkcb, cbData, jsfFlash_chunkcb);
     uint32_t errors = cbData[1];
 
     if (!jsfFlashContainsCode()) {
@@ -492,7 +520,7 @@ void jsfLoadStateFromFlash() {
     for (i=1;i<=jsVarCount;i++) {
       fread(_jsvGetAddressOf(i),1,sizeof(JsVar),f);
     }*/
-    DECOMPRESS(jsfLoadFromFlash_readcb, (uint32_t*)f, (unsigned char*)_jsvGetAddressOf(1));
+    DECOMPRESS(jsfLoadFromFlash_readcb, (uint32_t*)f, (unsigned char*)_jsvGetAddressOf(1), JSVAR_BLOCK_SIZE * sizeof(JsVar), jsfFlash_chunkcb);
     fclose(f);
   } else {
     jsiConsolePrint("\nFile open of espruino.state failed... \n");
@@ -518,8 +546,22 @@ void jsfLoadStateFromFlash() {
     jsiConsolePrintf("Invalid saved code in flash!\n");
     return;
   }
-  jsiConsolePrintf("Loading %d bytes from flash...\n", len);
-  DECOMPRESS(jsfLoadFromFlash_readcb, cbData, (unsigned char*)basePtr);
+  unsigned int jsVarCount;
+#ifdef RESIZABLE_JSVARS
+  jshFlashRead(&jsVarCount, cbData[1], sizeof(jsVarCount)); // number of jsvars
+  if(!jsVarCount || jsVarCount == (unsigned int) -1) {
+    jsiConsolePrintf("No state saved in flash\n");
+    return;
+  }
+  jsvSetMemoryTotal(jsVarCount);
+  cbData[1] += sizeof(jsVarCount);
+  len = JSVAR_BLOCK_SIZE;
+#else
+  jsVarCount = JSVAR_CACHE_SIZE;
+  len = JSVAR_CACHE_SIZE;
+#endif
+  jsiConsolePrintf("Loading %d jsvars from flash...\n", jsVarCount);
+  DECOMPRESS(jsfLoadFromFlash_readcb, cbData, (unsigned char*)basePtr, len * sizeof(JsVar), jsfFlash_chunkcb);
 #endif
 }
 

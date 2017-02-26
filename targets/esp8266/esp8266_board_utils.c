@@ -94,3 +94,23 @@ void esp8266_board_writeString(
 void esp8266_log(char *message) {
   os_printf("%s", message);
 }
+
+#ifdef RESIZABLE_JSVARS
+/**
+ * If we are using RESIZABLE_JSVARS we need malloc and related functions
+ * These are not included in the standard lib (esp_open_sdk) but are just
+ * provided here calling the SDK heap handling functions
+ */
+
+void __attribute__((malloc)) *malloc(size_t nbytes) {
+	return os_malloc(nbytes);
+}
+
+void *realloc(void *aptr, size_t nbytes) {
+	return os_realloc(aptr, nbytes);
+}
+
+void free(void *aptr) {
+	return os_free(aptr);
+}
+#endif

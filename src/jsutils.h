@@ -137,12 +137,24 @@ int flash_strcmp(const char *mem, const char *flash);
 */
 
 #ifdef RESIZABLE_JSVARS
- //  probably linux - allow us to allocate more blocks of variables
-  typedef uint32_t JsVarRef;
-  typedef int32_t JsVarRefSigned;
-  #define JSVARREF_MIN (-2147483648)
-  #define JSVARREF_MAX 2147483647
-  #define JSVARREF_SIZE 4
+  //  Allow us to allocate more blocks of variables
+  #ifdef LINUX
+    typedef uint32_t JsVarRef;
+    typedef int32_t JsVarRefSigned;
+    #define JSVAR_BLOCK_SIZE 4096
+    #define JSVAR_BLOCK_SHIFT 12
+    #define JSVARREF_MIN (-2147483648)
+    #define JSVARREF_MAX 2147483647
+    #define JSVARREF_SIZE 4
+  #else
+    typedef uint16_t JsVarRef;
+    typedef int16_t JsVarRefSigned;
+    #define JSVAR_BLOCK_SIZE 128
+    #define JSVAR_BLOCK_SHIFT 7
+    #define JSVARREF_MIN (-32768)
+    #define JSVARREF_MAX 32767
+    #define JSVARREF_SIZE 2
+  #endif
 #else
    /** JsVerRef stores References for variables - We treat 0 as null
    *  NOTE: we store JSVAR_DATA_STRING_* as actual values so we can do #if on them below
